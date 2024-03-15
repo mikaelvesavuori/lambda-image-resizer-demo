@@ -65,6 +65,7 @@ async function convertImages(
  */
 async function convert(input: Buffer, settings: ConversionSettings) {
   const { maxWidth, maxHeight } = settings;
+
   return sharp(input)
     .resize(maxWidth, maxHeight, {
       fit: sharp.fit.inside,
@@ -84,7 +85,7 @@ async function write(bucket: string, key: string, body: Buffer) {
     Body: body
   });
 
-  return await client.send(command);
+  await client.send(command);
 }
 
 /**
@@ -92,6 +93,7 @@ async function write(bucket: string, key: string, body: Buffer) {
  */
 function result(message: Record<string, any> | string = 'OK', statusCode = 200) {
   const body = JSON.stringify(message);
+
   return {
     statusCode,
     body
