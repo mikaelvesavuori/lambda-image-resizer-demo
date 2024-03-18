@@ -11,9 +11,11 @@ const conversions: ConversionSettings[] = [
 ];
 
 /**
- * @description This Lambda handler takes the binary input of a JPG image,
- * converts it into a buffer, converts it according to your settings into
- * a number of resized images, and then puts them in an S3 bucket.
+ * @description This Lambda handler can be driven from an API Gateway or by S3 events.
+ *
+ * Overall, it takes the binary input of a JPG image (or retrieves the objects by their record keys),
+ * converts them into buffers, converts them according to your settings into
+ * a number of resized images, and then puts them in an S3 bucket in a designated location.
  * @see https://aws.amazon.com/blogs/compute/handling-binary-data-using-amazon-api-gateway-http-apis/
  */
 export async function handler(event: Record<string, any>) {
