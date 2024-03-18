@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
 const client = new S3Client({});
 
@@ -17,16 +17,20 @@ const conversions: ConversionSettings[] = [
  * @see https://aws.amazon.com/blogs/compute/handling-binary-data-using-amazon-api-gateway-http-apis/
  */
 export async function handler(event: Record<string, any>) {
-  if (!event?.isBase64Encoded || event?.headers?.['content-type'] !== 'image/jpg')
-    throw new Error('Input must be binary (Base64-encoded) and of JPG type!');
+  const inputType: InputType = event?.headers ? 'api' : 's3';
+
+  if (!isCorrectType(event, inputType)) throw new Error('Input must be of JPG type!');
+  if (!isBinary(event, inputType)) throw new Error('Input must be binary (Base64-encoded)!');
 
   const bucket = process.env.BUCKET_NAME || '';
   if (!bucket) throw new Error('Missing bucket name!');
 
-  try {
-    const imageBuffer = Buffer.from(event.body, 'base64');
+  const resizedImagesPath = process.env.RESIZED_IMAGES_PATH;
+  if (!resizedImagesPath) throw new Error('Missing path to resized images!');
 
-    await convertImages(bucket, imageBuffer, conversions);
+  try {
+    const imageBuffers = await getImageBuffers(event, inputType, bucket);
+    await convertImages({ bucket, resizedImagesPath, imageBuffers, conversions });
 
     return result();
   } catch (error: any) {
@@ -37,25 +41,86 @@ export async function handler(event: Record<string, any>) {
 }
 
 /**
+ * @description Validation for correct type of input.
+ */
+function isCorrectType(event: Record<string, any>, inputType: InputType) {
+  // Handle API Gateway
+  if (inputType === 'api') {
+    if (event.headers['content-type'] === 'image/jpg') return true;
+    return false;
+  }
+
+  // Handle S3 records
+  const records = event?.Records || [];
+
+  const results = records.map((record: Record<string, any>) => {
+    const key = record.s3?.object?.key || '';
+    const split = key.split('/');
+    return split[split.length - 1].endsWith('.jpg');
+  });
+
+  return results.every((result: boolean) => result === true);
+}
+
+/**
+ * @description Validation for binary input. We only know this up-front with API Gateway.
+ */
+function isBinary(event: Record<string, any>, inputType: InputType) {
+  if (inputType === 'api') return !!event?.isBase64Encoded;
+  return true;
+}
+
+/**
+ * @description Get the file names (paths) of S3 records and their keys.
+ */
+function getFileNamesFromRecords(records: Record<string, any>[]) {
+  return records
+    .map((record: Record<string, any>) => record.s3?.object?.key || '')
+    .filter((fileName) => fileName);
+}
+
+/**
+ * @description Gets buffers for all images. For API Gateway input, we can
+ * get it from the body, but for S3 we will have to get all of the images.
+ */
+async function getImageBuffers(
+  event: Record<string, any>,
+  inputType: InputType,
+  bucket: string
+): Promise<Buffer[]> {
+  if (inputType === 'api') return [Buffer.from(event.body, 'base64')];
+
+  const records = getFileNamesFromRecords(event?.Records || []);
+  const buffers: Buffer[] = [];
+
+  for (const record of records) {
+    const buffer = await get(bucket, record);
+    buffers.push(Buffer.from(buffer, 'base64'));
+  }
+
+  return buffers;
+}
+
+/**
  * @description This is the "use case" code to handle the actual process of
  * converting images and then writing them to a bucket.
  */
-async function convertImages(
-  bucket: string,
-  imageBuffer: Buffer,
-  conversions: ConversionSettings[]
-) {
-  const images = await Promise.all(
-    conversions.map((conversion) => convert(imageBuffer, conversion))
-  );
+async function convertImages(options: ConvertImagesOptions) {
+  const { bucket, resizedImagesPath, imageBuffers, conversions } = options;
 
-  const date = Date.now();
+  for (const imageBuffer of imageBuffers) {
+    const images = await Promise.all(
+      conversions.map((conversion) => convert(imageBuffer, conversion))
+    );
 
-  for (const [index, image] of images.entries()) {
-    const w = conversions[index].maxWidth;
-    const h = conversions[index].maxHeight;
-    const name = `image-${date}-${w}x${h}.jpg`;
-    await write(bucket, name, image);
+    const date = Date.now();
+
+    for (const [index, image] of images.entries()) {
+      const w = conversions[index].maxWidth;
+      const h = conversions[index].maxHeight;
+      const name = `${resizedImagesPath}/image-${date}-${w}x${h}.jpg`;
+      await write(bucket, name, image);
+    }
   }
 }
 
@@ -73,6 +138,16 @@ async function convert(input: Buffer, settings: ConversionSettings) {
     })
     .toFormat('jpeg')
     .toBuffer();
+}
+
+async function get(bucket: string, key: string) {
+  const command = new GetObjectCommand({
+    Bucket: bucket,
+    Key: key
+  });
+
+  const response = await client.send(command);
+  return (await response.Body?.transformToString('base64')) || '';
 }
 
 /**
@@ -104,3 +179,12 @@ type ConversionSettings = {
   maxWidth: number;
   maxHeight: number;
 };
+
+type ConvertImagesOptions = {
+  bucket: string;
+  resizedImagesPath: string;
+  imageBuffers: Buffer[];
+  conversions: ConversionSettings[];
+};
+
+type InputType = 'api' | 's3';

@@ -17,9 +17,9 @@ provider:
     maxPreviousDeploymentArtifacts: 5
     serverSideEncryption: AES256
   stackTags:
-    Usage: ${self:service}
+    service: ${self:service}
   tags:
-    Usage: ${self:service}
+    service: ${self:service}
 
 plugins:
   - serverless-esbuild
@@ -32,6 +32,8 @@ package:
 custom:
   imagesBucketArn: arn:aws:s3:::${self:custom.imagesBucketName}
   imagesBucketName: ${self:service}-some-random-value # SET THIS VALUE
+  imagesBucketPrefix: original/ # Path in S3
+  resizedImagesPath: images-resized # Path in S3
   esbuild:
     bundle: true
     minify: true
@@ -46,13 +48,23 @@ functions:
     handler: src/handler.handler
     description: Convert image
     events:
+      # API: Pass in a JPG file as binary content
       - httpApi:
           method: POST
           path: /
+      # Event-driven: Create resized versions of files entering an S3 path
+      - s3:
+          bucket: ${self:custom.imagesBucketName}
+          event: s3:ObjectCreated:*
+          rules:
+            - prefix: ${self:custom.imagesBucketPrefix}
+            - suffix: .jpg
     iamRoleStatements:
       - Effect: "Allow"
         Action:
+          - s3:GetObject
           - s3:PutObject
         Resource: "${self:custom.imagesBucketArn}/*"
     environment:
       BUCKET_NAME: ${self:custom.imagesBucketName}
+      RESIZED_IMAGES_PATH: ${self:custom.resizedImagesPath}
